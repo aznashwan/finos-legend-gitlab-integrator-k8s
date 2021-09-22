@@ -1,0 +1,9 @@
+# Copyright 2021 Canonical
+# See LICENSE file for licensing details.
+
+get-redirect-uris:
+  description: |
+    Returns a string containing all the redirect URIs required to be set on
+    the GitLab application separated by newlines.
+    This requires the Integrator be already related to all of the FINOS Legend
+    components which require their redirect URIs set.
