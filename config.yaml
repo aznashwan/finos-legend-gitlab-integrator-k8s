@@ -29,12 +29,12 @@ options:
     description: |
       String access token for the GitLab API on the provided host.
 
-  allow-untrusted-https:
+  verify-ssl:
     type: boolean
-    default: false
+    default: true
     description: |
       Whether or not to trust certificates if configured to connect to a
-      server which is using HTTPS with a sels-signed certificate.
+      server which is using HTTPS with a self-signed certificate.
 
   bypass-client-id:
     type: string

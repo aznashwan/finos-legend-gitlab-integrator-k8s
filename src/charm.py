@@ -33,6 +33,12 @@ GITLAB_OPENID_DISCOVERY_URL_FORMAT = (
 
 GITLAB_REQUIRED_SCOPES = ['api', 'openid', 'profile']
 
+RELATION_NAME_SDLC = "legend-sdlc-gitlab"
+RELATION_NAME_ENGINE = "legend-engine-gitlab"
+RELATION_NAME_STUDIO = "legend-studio-gitlab"
+ALL_LEGEND_RELATION_NAMES = [
+    RELATION_NAME_SDLC, RELATION_NAME_ENGINE, RELATION_NAME_STUDIO]
+
 
 class LegendGitlabIntegratorCharm(charm.CharmBase):
     """Charm class which provides GitLab access to other Legend charms."""
@@ -59,44 +65,34 @@ class LegendGitlabIntegratorCharm(charm.CharmBase):
 
         # Legend component relation events:
         self.framework.observe(
-            self.on["legend-sdlc-gitlab"].relation_joined,
+            self.on[RELATION_NAME_SDLC].relation_joined,
             self._on_legend_sdlc_gitlab_relation_joined)
         self.framework.observe(
-            self.on["legend-sdlc-gitlab"].relation_changed,
+            self.on[RELATION_NAME_SDLC].relation_changed,
             self._on_legend_sdlc_gitlab_relation_changed)
         self.framework.observe(
-            self.on["legend-sdlc-gitlab"].relation_broken,
+            self.on[RELATION_NAME_SDLC].relation_broken,
             self._on_legend_sdlc_gitlab_relation_broken)
 
-        self._legend_gitlab_sdlc_consumer = (
-            legend_gitlab.LegendGitlabConsumer(
-                self, relation_name='legend-sdlc-gitlab'))
-
         self.framework.observe(
-            self.on["legend-engine-gitlab"].relation_joined,
+            self.on[RELATION_NAME_ENGINE].relation_joined,
             self._on_legend_engine_gitlab_relation_joined)
         self.framework.observe(
-            self.on["legend-engine-gitlab"].relation_changed,
+            self.on[RELATION_NAME_ENGINE].relation_changed,
             self._on_legend_engine_gitlab_relation_changed)
         self.framework.observe(
-            self.on["legend-engine-gitlab"].relation_broken,
+            self.on[RELATION_NAME_ENGINE].relation_broken,
             self._on_legend_engine_gitlab_relation_broken)
-        self._legend_gitlab_engine_consumer = (
-            legend_gitlab.LegendGitlabConsumer(
-                self, relation_name='legend-engine-gitlab'))
 
         self.framework.observe(
-            self.on["legend-studio-gitlab"].relation_joined,
+            self.on[RELATION_NAME_STUDIO].relation_joined,
             self._on_legend_studio_gitlab_relation_joined)
         self.framework.observe(
-            self.on["legend-studio-gitlab"].relation_changed,
+            self.on[RELATION_NAME_STUDIO].relation_changed,
             self._on_legend_studio_gitlab_relation_changed)
         self.framework.observe(
-            self.on["legend-studio-gitlab"].relation_broken,
+            self.on[RELATION_NAME_STUDIO].relation_broken,
             self._on_legend_studio_gitlab_relation_broken)
-        self._legend_gitlab_studio_consumer = (
-            legend_gitlab.LegendGitlabConsumer(
-                self, relation_name='legend-studio-gitlab'))
 
         # Actions:
         self.framework.observe(
@@ -107,32 +103,6 @@ class LegendGitlabIntegratorCharm(charm.CharmBase):
         self._stored.set_default(log_level="DEBUG")
         self._stored.set_default(gitlab_client_id="")
         self._stored.set_default(gitlab_client_secret="")
-        self._stored.set_default(legend_sdlc_redirect_uris=None)
-        self._stored.set_default(legend_engine_redirect_uris=None)
-        self._stored.set_default(legend_studio_redirect_uris=None)
-
-    def _check_set_gitlab_creds(self):
-        """Checks whether either GitLab App bypass ID/secret was provided, or
-        attempts to create a new application on GitLab otherwise.
-        """
-        bypass_client_id = self.model.config['bypass-client-id']
-        bypass_client_secret = self.model.config['bypass-client-secret']
-        if all([bypass_client_id, bypass_client_secret]):
-            logger.info(
-                "### Using pre-seeded Gitlab application ID/settings.")
-            self._stored.gitlab_client_id = bypass_client_id
-            self._stored.gitlab_client_secret = bypass_client_secret
-            self._update_charm_status()
-            return
-
-        possible_blocked_status = self._check_create_gitlab_application()
-        if possible_blocked_status:
-            self.unit.status = possible_blocked_status
-            return
-        self._update_charm_status()
-
-    def _on_install(self, event: charm.InstallEvent):
-        self._check_set_gitlab_creds()
 
     def _get_gitlab_scheme(self):
         scheme = self.model.config['api-scheme']
@@ -155,96 +125,14 @@ class LegendGitlabIntegratorCharm(charm.CharmBase):
             return None
         return gitlab.Gitlab(
             self._get_gitlab_base_url(),
-            private_token=self.model.config['access-token'])
+            private_token=self.model.config['access-token'],
+            ssl_verify=self.model.config['verify-ssl'])
 
     def _get_gitlab_openid_discovery_url(self):
         return GITLAB_OPENID_DISCOVERY_URL_FORMAT % {
             "base_url": self._get_gitlab_base_url()}
 
-    def _get_gitlab_relation_data(self):
-        if not all([
-                self._stored.gitlab_client_id,
-                self._stored.gitlab_client_secret]):
-            logger.warning("GitLab Client ID and Secret unset.")
-            return {}
-        return {
-            "gitlab_host": self.model.config['gitlab-host'],
-            "gitlab_port": self.model.config['gitlab-port'],
-            "gitlab_scheme": self._get_gitlab_scheme(),
-            "client_id": self._stored.gitlab_client_id,
-            "client_secret": self._stored.gitlab_client_secret,
-            "openid_discovery_url": self._get_gitlab_openid_discovery_url()}
-
-    def _check_gitlab_app_name_available(self, app_name):
-        if not self._gitlab_client:
-            return None
-        apps = self._gitlab_client.applications.list()
-        matches = [app for app in apps if app.name == app_name]
-        return bool(matches)
-
-    def _get_legend_services_redirect_uris(self):
-        """Returns a string containing the service URLs in the correct order
-        (Engine, SDLC, then Studio).
-        Returns an empty string if not all Legend services are related.
-        """
-        service_uris = [
-            # NOTE(aznashwan): order of these is important:
-            self._stored.legend_engine_redirect_uris,
-            self._stored.legend_sdlc_redirect_uris,
-            self._stored.legend_studio_redirect_uris]
-        # NOTE: it is okay for a service to not have any redirect URIs
-        # (i.e. empty string), but not okay for them to not be set (i.e. None):
-        if any([item is None for item in service_uris]):
-            logger.warning(
-                "Missing one or more relations to the Legend "
-                "SDLC, Engine, and Studio.")
-            return ""
-
-        redirect_uris = "\n".join(service_uris)
-        return redirect_uris
-
-    def _update_charm_status(self):
-        if not self._get_gitlab_relation_data():
-            self.unit.status = model.BlockedStatus(
-                "awaiting gitlab server configuration or relation")
-            return
-
-        possible_blocked_status = (
-            self._check_legend_services_relations_status())
-        if possible_blocked_status is not None:
-            self.unit.status = possible_blocked_status
-            return
-        self.unit.status = model.ActiveStatus()
-
-    def _check_legend_services_relations_status(self):
-        """Checks whether all the required Legend services were related.
-        Returns None if all the relations are present, or a
-        `model.BlockedStatus` with a relevant message otherwise.
-        """
-        opts = {
-            "finos-legend-sdlc-k8s": self._stored.legend_sdlc_redirect_uris,
-            "finos-legend-engine-k8s": (
-                self._stored.legend_engine_redirect_uris),
-            "finos-legend-studio-k8s": self._stored.legend_studio_redirect_uris
-        }
-        # NOTE(aznashwan): it is acceptable for a service to have no redirect
-        # URIs (empty string), but not None:
-        missing = [k for k, v in opts.items() if v is None]
-        if missing:
-            return model.BlockedStatus(
-                "requires relating to following legend services: %s" % (
-                    ", ".join(missing)))
-        return None
-
-    def _on_get_redirect_uris_actions(self, event: charm.ActionEvent):
-        redirect_uris = self._get_legend_services_redirect_uris()
-        if not redirect_uris:
-            raise ValueError(
-                "Need to have all Legend services related to return redirect "
-                "URIs.")
-        event.set_results({"result": redirect_uris})
-
-    def _check_create_gitlab_application(self):
+    def _create_gitlab_application(self):
         """Creates a GitLab application for the Legend installation and sets
         the client ID/secret in the charm's cold storage.
         Returns a `model.BlockedStatus` if there are any issues in the setup,
@@ -281,24 +169,215 @@ class LegendGitlabIntegratorCharm(charm.CharmBase):
         redirect_uris = self._get_legend_services_redirect_uris()
         if not redirect_uris:
             return model.BlockedStatus(
-                "cannot create GitLab app without all legend "
+                "cannot create gitlab app without all legend "
                 "services related")
 
         # TODO(aznashwan): make app trusted:
         # https://github.com/finos/legend/blob/master/installers/docker-compose/legend/scripts/setup-gitlab.sh#L36-L42
         app = self._gitlab_client.applications.create({
-            # TODO(aznashwan): generate unique app names:
-            "name": "Legend Demo",
+            "name": self.model.config['application-name'],
+            "scopes": " ".join(GITLAB_REQUIRED_SCOPES),
             "redirect_uri": redirect_uris})
-        self._stored.gitlab_client_id = app.client_id
-        self._stored.gitlab_client_secret = app.client_secret
+
+        self._stored.gitlab_client_id = app.application_id
+        self._stored.gitlab_client_secret = app.secret
+
+    def _check_gitlab_app_name_available(self, app_name):
+        if not self._gitlab_client:
+            return None
+        apps = self._gitlab_client.applications.list()
+        matches = [app for app in apps if app.application_name == app_name]
+        return not matches
+
+    def _check_set_up_gitlab_application(self):
+        """Checks whether either GitLab App bypass ID/secret was provided, or
+        attempts to create a new application on GitLab otherwise.
+        Either way, the client ID/secret of the app is set within stored state.
+        """
+        bypass_client_id = self.model.config['bypass-client-id']
+        bypass_client_secret = self.model.config['bypass-client-secret']
+        if all([bypass_client_id, bypass_client_secret]):
+            logger.info(
+                "### Using pre-seeded Gitlab application ID/settings.")
+            self._stored.gitlab_client_id = bypass_client_id
+            self._stored.gitlab_client_secret = bypass_client_secret
+            return None
+
+        # Check GitLab client available:
+        _ = self._gitlab_client
+        if not self._gitlab_client:
+            return model.BlockedStatus(
+                "awaiting gitlab server configuration or relation")
+
+        # Check application with said name already exists:
+        app_name = self.model.config['application-name']
+        try:
+            if not self._check_gitlab_app_name_available(app_name):
+                return model.BlockedStatus(
+                    "application with name '%s' already exists on gitlab")
+        except gitlab.exceptions.GitlabError as err:
+            logger.exception(
+                "Exception occurred while attempting to list GitLab apps: %s",
+                err)
+            if getattr(err, 'response_code', 0) == 403:
+                return model.BlockedStatus(
+                    "gitlab refused access to the applications apis with a 403"
+                    ", ensure the configured gitlab host can create "
+                    "application or manuallly create one")
+
+        # Create the GitLab app:
+        return self._create_gitlab_application()
+
+    def _get_legend_redirect_uris_from_relation(self, relation_name):
+        relation = None
+        try:
+            relation = self.model.get_relation(relation_name)
+            if not relation:
+                return None
+            gitlab_consumer = legend_gitlab.LegendGitlabConsumer(
+                self, relation_name)
+            return gitlab_consumer.get_legend_redirect_uris(relation.id)
+        except model.TooManyRelatedAppsError:
+            logger.error(
+                "this operator does not support multiple %s relations" % (
+                    relation_name))
+            return None
+
+    def _get_legend_services_redirect_uris(self):
+        """Returns a string containing the service URLs in the correct order
+        (Engine, SDLC, then Studio).
+        Returns an empty string if not all Legend services are related.
+        """
+        relation_names = [
+            # NOTE(aznashwan): order of these is important:
+            RELATION_NAME_ENGINE,
+            RELATION_NAME_SDLC,
+            RELATION_NAME_STUDIO]
+
+        # NOTE: it is okay for a service to not have any redirect URIs
+        # (i.e. empty string), but not okay for them to not be set (i.e. None):
+        redirect_uris = ""
+        for relation_name in relation_names:
+            uris = self._get_legend_redirect_uris_from_relation(relation_name)
+            if uris is None:
+                logger.warning(
+                    "Mussing redirect URIs for '%s' relation.", relation_name)
+                return ""
+            redirect_uris = "%s\n%s" % (redirect_uris, "\n".join(uris))
+        redirect_uris = redirect_uris.strip("\n")
+
+        return redirect_uris
+
+    def _check_legend_services_relations_status(self):
+        """Checks whether all the required Legend services were related.
+        Returns None if all the relations are present, or a
+        `model.BlockedStatus` with a relevant message otherwise.
+        """
+        charms_to_relation_names_map = {
+            "finos-legend-sdlc-k8s": RELATION_NAME_SDLC,
+            "finos-legend-engine-k8s": RELATION_NAME_ENGINE,
+            "finos-legend-studio-k8s": RELATION_NAME_STUDIO
+        }
+        # NOTE(aznashwan): it is acceptable for a service to have no redirect
+        # URIs (empty string), but not None:
+        missing = [
+            charm_name
+            for charm_name, rel_name in charms_to_relation_names_map.items()
+            if self._get_legend_redirect_uris_from_relation(rel_name) is None]
+        if missing:
+            return model.BlockedStatus(
+                "requires relating to following legend services: %s" % (
+                    ", ".join(missing)))
+        return None
+
+    def _get_gitlab_relation_data(self):
+        if not all([
+                self._stored.gitlab_client_id,
+                self._stored.gitlab_client_secret]):
+            logger.warning("GitLab Client ID and Secret unset.")
+            return {}
+        return {
+            "gitlab_host": self.model.config['gitlab-host'],
+            "gitlab_port": self.model.config['gitlab-port'],
+            "gitlab_scheme": self._get_gitlab_scheme(),
+            "client_id": self._stored.gitlab_client_id,
+            "client_secret": self._stored.gitlab_client_secret,
+            "openid_discovery_url": self._get_gitlab_openid_discovery_url()}
+
+    def _set_legend_gitlab_data_in_relation(
+            self, relation_name, gitlab_relation_data, validate_creds=True):
+        """Sets the provided GitLab data into the given relation.
+        Returns a `model.BlockedStatus` is something goes wrong, else None.
+        """
+        relation = None
+        try:
+            relation = self.model.get_relation(relation_name)
+        except model.TooManyRelatedAppsError:
+            return model.BlockedStatus(
+                "this operator does not support multiple %s relations" % (
+                    relation_name))
+        if not relation:
+            logger.info("No '%s' relation present", relation_name)
+            return None
+
+        try:
+            legend_gitlab.set_legend_gitlab_creds_in_relation_data(
+                relation.data[self.app], gitlab_relation_data,
+                validate_creds=validate_creds)
+        except ValueError as ex:
+            logger.warning(
+                "Error occurred while setting GitLab creds relation "
+                "data: %s", str(ex))
+            return model.BlockedStatus(
+                "failed to set gitlab credentials in %s relation" % (
+                    relation_name))
+        return None
+
+    def _set_gitlab_data_in_all_relations(
+            self, gitlab_relation_data, validate_creds=True):
+        """Sets the provided GitLab data into all the relations with the
+        Legend services.
+        Returns a `model.BlockedStatus` is something goes wrong, else None.
+        """
+        for relation_name in ALL_LEGEND_RELATION_NAMES:
+            blocked = self._set_legend_gitlab_data_in_relation(
+                relation_name, gitlab_relation_data,
+                validate_creds=validate_creds)
+            if blocked:
+                return blocked
+
+    def _update_charm_status(self):
+        """Updates the status of the charm as well as all relations."""
+        possible_blocked_status = (
+            self._check_legend_services_relations_status())
+        if possible_blocked_status:
+            self.unit.status = possible_blocked_status
+            return
+
+        possible_blocked_status = self._check_set_up_gitlab_application()
+        if possible_blocked_status:
+            self.unit.status = possible_blocked_status
+            return
+
+        gitlab_relation_data = self._get_gitlab_relation_data()
+        if not gitlab_relation_data:
+            self.unit.status = model.BlockedStatus(
+                "awaiting gitlab server configuration or relation")
+            return
+        # propagate the relation data:
+        possible_blocked_status = self._set_gitlab_data_in_all_relations(
+            gitlab_relation_data, validate_creds=False)
+        if possible_blocked_status:
+            self.unit.status = possible_blocked_status
+            return
+
+        self.unit.status = model.ActiveStatus()
+
+    def _on_install(self, event: charm.InstallEvent):
+        self._update_charm_status()
 
     def _on_config_changed(self, _) -> None:
-        # TODO(aznashwan): presuming config-changed for the actual GitLab host,
-        # we'll need to find a way to notify all related services with the
-        # updated client ID/secret
-        self._check_set_gitlab_creds()
-        pass
+        self._update_charm_status()
 
     def _on_gitlab_relation_joined(self, event: charm.RelationJoinedEvent):
         # TODO(aznashwan): eventual GitLab operator relation:
@@ -309,142 +388,49 @@ class LegendGitlabIntegratorCharm(charm.CharmBase):
         # TODO(aznashwan): eventual GitLab operator relation:
         pass
 
-    def _check_set_legend_gitlab_creds_in_relation(
-            self, event: charm.RelationChangedEvent):
-        """Checks whether all the Legend services have been related before
-        setting the GitLab app details in the relation data.
-        """
-        gitlab_relation_data = self._get_gitlab_relation_data()
-        if not gitlab_relation_data:
-            logger.info(
-                "Not connected to GitLab. (either related, or otherwise), "
-                "and thus cannot set relation details.")
-            return None
-
-        possible_blocked_status = (
-            self._check_legend_services_relations_status())
-        if possible_blocked_status:
-            # NOTE(aznashwan): we withold sending the GitLab app data
-            # until we have all the services related:
-            logger.info(
-                "Witholding GitLab creds untill all services have registered.")
-            event.defer()
-            return
-
-        try:
-            legend_gitlab.set_legend_gitlab_creds_in_relation_data(
-                event.relation.data[self.app], gitlab_relation_data)
-        except ValueError as ex:
-            logger.warning(
-                "Error occurred while setting GitLab creds relation "
-                "data: %s" % str(ex))
-            self.unit.status = model.BlockedStatus(
-                "failed to set gitlab credentials in relation")
-            return None
-
-        return gitlab_relation_data
-
     def _on_legend_sdlc_gitlab_relation_joined(
-            self, event: charm.RelationJoinedEvent):
+            self, event: charm.RelationJoinedEvent) -> None:
         pass
 
     def _on_legend_sdlc_gitlab_relation_changed(
-            self, event: charm.RelationChangedEvent):
-        redirect_uris = None
-        get_redirect_uris = (
-            self._legend_gitlab_sdlc_consumer.get_legend_redirect_uris)
-
-        try:
-            redirect_uris = get_redirect_uris(event.relation.id)
-        except ValueError:
-            self.unit.status = model.BlockedStatus(
-                "failed to read redirect uris from finos-legend-sdlc-k8s "
-                "relation")
-            return
-        if not redirect_uris:
-            self.unit.status = model.WaitingStatus(
-                "waiting for sdlc redirect uris")
-            return
-
-        # NOTE(aznashwan): we pre-join the redirect uris into a string
-        # to avoid dealing with StoredList and co.:
-        self._stored.legend_sdlc_redirect_uris = "\n".join(redirect_uris)
+            self, event: charm.RelationChangedEvent) -> None:
         self._update_charm_status()
-
-        self._check_set_legend_gitlab_creds_in_relation(event)
 
     def _on_legend_sdlc_gitlab_relation_broken(
             self, event: charm.RelationBrokenEvent) -> None:
-        self._stored.legend_sdlc_redirect_uris = None
         self._update_charm_status()
 
     def _on_legend_engine_gitlab_relation_joined(
-            self, event: charm.RelationJoinedEvent):
+            self, event: charm.RelationJoinedEvent) -> None:
         pass
 
     def _on_legend_engine_gitlab_relation_changed(
-            self, event: charm.RelationChangedEvent):
-        redirect_uris = None
-        get_redirect_uris = (
-            self._legend_gitlab_engine_consumer.get_legend_redirect_uris)
-
-        try:
-            redirect_uris = get_redirect_uris(event.relation.id)
-        except ValueError:
-            self.unit.status = model.BlockedStatus(
-                "failed to read redirect uris from finos-legend-engine-k8s "
-                "relation")
-            return
-        if not redirect_uris:
-            self.unit.status = model.WaitingStatus(
-                "waiting for rngine redirect uris")
-            return
-
-        # NOTE(aznashwan): we pre-join the redirect uris into a string
-        # to avoid dealing with StoredList and co.:
-        self._stored.legend_engine_redirect_uris = "\n".join(redirect_uris)
+            self, event: charm.RelationChangedEvent) -> None:
         self._update_charm_status()
-
-        self._check_set_legend_gitlab_creds_in_relation(event)
 
     def _on_legend_engine_gitlab_relation_broken(
             self, event: charm.RelationBrokenEvent) -> None:
-        self._stored.legend_engine_redirect_uris = None
         self._update_charm_status()
 
     def _on_legend_studio_gitlab_relation_joined(
-            self, event: charm.RelationJoinedEvent):
+            self, event: charm.RelationJoinedEvent) -> None:
         pass
 
     def _on_legend_studio_gitlab_relation_changed(
-            self, event: charm.RelationChangedEvent):
-        redirect_uris = None
-        get_redirect_uris = (
-            self._legend_gitlab_studio_consumer.get_legend_redirect_uris)
-
-        try:
-            redirect_uris = get_redirect_uris(event.relation.id)
-        except ValueError:
-            self.unit.status = model.BlockedStatus(
-                "failed to read redirect uris from finos-legend-studio-k8s "
-                "relation")
-            return
-        if not redirect_uris:
-            self.unit.status = model.WaitingStatus(
-                "waiting for studio redirect uris")
-            return
-
-        # NOTE(aznashwan): we pre-join the redirect uris into a string
-        # to avoid dealing with StoredList and co.:
-        self._stored.legend_studio_redirect_uris = "\n".join(redirect_uris)
-        self._update_charm_status()
-
-        self._check_set_legend_gitlab_creds_in_relation(event)
+            self, event: charm.RelationChangedEvent) -> None:
+        self._update_charm_status
 
     def _on_legend_studio_gitlab_relation_broken(
             self, event: charm.RelationBrokenEvent) -> None:
-        self._stored.legend_studio_redirect_uris = None
         self._update_charm_status()
+
+    def _on_get_redirect_uris_actions(self, event: charm.ActionEvent):
+        redirect_uris = self._get_legend_services_redirect_uris()
+        if not redirect_uris:
+            raise ValueError(
+                "Need to have all Legend services related to return redirect "
+                "URIs.")
+        event.set_results({"result": redirect_uris})
 
 
 if __name__ == "__main__":
