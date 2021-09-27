@@ -1,0 +1,59 @@
+# Copyright 2021 Canonical
+# See LICENSE file for licensing details.
+
+options:
+  gitlab-host:
+    type: string
+    default: gitlab.com
+    description: Hostname or IP of a GitLab installation.
+
+  gitlab-port:
+    type: int
+    default: 443
+    description: Port on the provided 'gitlab-host' to contact the API on.
+
+  api-scheme:
+    type: string
+    default: https
+    description: Scheme (HTTP or HTTPS) to use for the GitLab API.
+
+  application-name:
+    type: string
+    default: Charmed FINOS Legend
+    description: |
+      String name of the application to be created on GitLab for the Legend
+      deployment. Must be unique on GitLab.
+
+  access-token:
+    type: string
+    description: |
+      String access token for the GitLab API on the provided host.
+
+  allow-untrusted-https:
+    type: boolean
+    default: false
+    description: |
+      Whether or not to trust certificates if configured to connect to a
+      server which is using HTTPS with a sels-signed certificate.
+
+  bypass-client-id:
+    type: string
+    default: ""
+    description: |
+      Client ID for a pre-created application already present on GitLab.
+      If provided alongside 'bypass-client-secret', the integrator will skip
+      creating the application on GitLab and simply provide these application
+      credentials to all the Legend components.
+      Note that one must still manually update the GitLab application with the
+      redirect URIs returned by the 'get-redirect-uris' action.
+
+  bypass-client-secret:
+    type: string
+    default: ""
+    description: |
+      Client secret for a pre-created application already present on GitLab.
+      If provided alongside 'bypass-client-id', the integrator will skip
+      creating the application on GitLab and simply provide these application
+      credentials to all the Legend components.
+      Note that one must still manually update the GitLab application with the
+      redirect URIs returned by the 'get-redirect-uris' action.
