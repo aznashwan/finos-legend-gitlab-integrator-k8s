@@ -11,18 +11,19 @@ from ops import framework
 
 
 # The unique Charmhub library identifier, never change it
-LIBID = "c31b1a71091248029dbc029989f35343"
+LIBID = "4f850403ae5d45aba38e3beaf3eb829e"
 
 # Increment this major API version when introducing breaking changes
 LIBAPI = 0
 
 # Increment this PATCH version before using `charmcraft publish-lib` or reset
 # to 0 if you are raising the major API version
-LIBPATCH = 0
+LIBPATCH = 1
 
 REQUIRED_LEGEND_GITLAB_CREDENTIALS = [
     "client_id", "client_secret", "openid_discovery_url",
-    "gitlab_host", "gitlab_port", "gitlab_scheme"]
+    "gitlab_host", "gitlab_port", "gitlab_scheme",
+    "gitlab_host_cert_b64"]
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +130,11 @@ class LegendGitlabConsumer(framework.Object):
             {
                 "client_id": "<client_id>",
                 "client_secret": "<client_secret>"
+                "openid_discovery_url": "<URL>",
+                "gitlab_host": "<GitLab hostname or IP>",
+                "gitlab_port": <port>,
+                "gitlab_scheme": "<http/https>",
+                "gitlab_host_cert_b64": "<base64 DER certificate>"
             }
 
         Raises:

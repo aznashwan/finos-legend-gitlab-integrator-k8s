@@ -121,7 +121,8 @@ class LegendGitlabIntegratorCharm(charm.CharmBase):
 
     @property
     def _gitlab_client(self):
-        if not self.model.config.get('access-token'):
+        if not self.model.config.get('access-token') or not (
+                self.model.config.get('gitlab-host-der-b64')):
             return None
         return gitlab.Gitlab(
             self._get_gitlab_base_url(),
@@ -172,12 +173,22 @@ class LegendGitlabIntegratorCharm(charm.CharmBase):
                 "cannot create gitlab app without all legend "
                 "services related")
 
-        # TODO(aznashwan): make app trusted:
+        # TODO(aznashwan): make app trusted by default:
         # https://github.com/finos/legend/blob/master/installers/docker-compose/legend/scripts/setup-gitlab.sh#L36-L42
-        app = self._gitlab_client.applications.create({
+        app = None
+        app_properties = {
             "name": self.model.config['application-name'],
             "scopes": " ".join(GITLAB_REQUIRED_SCOPES),
-            "redirect_uri": redirect_uris})
+            "redirect_uri": redirect_uris}
+        logger.info(
+            "Attempting to create new GitLab application with the following "
+            "properties: %s", app_properties)
+        try:
+            app = self._gitlab_client.applications.create(app_properties)
+        except Exception as ex:
+            logger.exception(ex)
+            return model.BlockedStatus(
+                "failed to create application on gitlab")
 
         self._stored.gitlab_client_id = app.application_id
         self._stored.gitlab_client_secret = app.secret
@@ -214,7 +225,8 @@ class LegendGitlabIntegratorCharm(charm.CharmBase):
         try:
             if not self._check_gitlab_app_name_available(app_name):
                 return model.BlockedStatus(
-                    "application with name '%s' already exists on gitlab")
+                    "application with name '%s' already exists on gitlab" % (
+                        app_name))
         except gitlab.exceptions.GitlabError as err:
             logger.exception(
                 "Exception occurred while attempting to list GitLab apps: %s",
@@ -299,6 +311,7 @@ class LegendGitlabIntegratorCharm(charm.CharmBase):
         return {
             "gitlab_host": self.model.config['gitlab-host'],
             "gitlab_port": self.model.config['gitlab-port'],
+            "gitlab_host_cert_b64": self.model.config['gitlab-host-der-b64'],
             "gitlab_scheme": self._get_gitlab_scheme(),
             "client_id": self._stored.gitlab_client_id,
             "client_secret": self._stored.gitlab_client_secret,
