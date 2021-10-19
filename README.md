@@ -111,6 +111,22 @@ timing:
 * paste the output of the `result` field from the `juju show-action-output`
   command run previously
 
+### Application reconfiguration or reuse:
+
+Due to intentional security-minded limitations in the GitLab APIs, the client ID and
+secret of existing applications cannot be queried programatically, and can only be known
+if creating an application on the spot.
+
+In this sense, reusing GitLab applications upon redeploying the integrator will
+require taking one of the following options:
+1. *reusing an existing GitLab application* can be achieved by reconfiguring the
+   charm using the `bypass-client-id` and `bypass-client-secret` configuration
+   options with the client ID/secret which can be obtained from
+   the GitLab Web user interface as described in section .B above.
+2. manually deleting the application and having the integrator create a new one on the next run
+3. reconfiguring the integrator with the `application-name` config option to create a new
+   application with a different name. Note that this does NOT clean up/replace the old app.
+
 ## OCI Images
 
 This charm has no actual workload container, but deploys a shell container

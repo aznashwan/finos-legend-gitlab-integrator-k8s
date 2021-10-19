@@ -196,12 +196,8 @@ class TestCharm(unittest.TestCase):
         _mock_gitlab.applications.list.assert_called_once()
         self.assertEqual(
             self.harness.charm.unit.status.message,
-            "application with name '%s' already exists on GitLab (possibly from a previous "
-            "Charmed Legend deployment). Please either delete the existing app, change the "
-            "'application-name' config option for a new one to be created, or use the "
-            "'bypass-client-id/secret' config options to set the client ID/secret "
-            "of the existing application which you can obtain by accessing the "
-            "GitLab installation's Web UI." % _mock_app.application_name,
+            "application with name '%s' already exists on GitLab, please review the charm "
+            "documentation on dealing with this" % _mock_app.application_name,
         )
 
         # `Gitlab.applications.create() failing:`

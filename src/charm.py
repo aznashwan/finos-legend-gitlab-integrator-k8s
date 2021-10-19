@@ -183,12 +183,8 @@ class LegendGitlabIntegratorCharm(charm.CharmBase):
         matches = [app for app in existing_apps if app.application_name == app_name]
         if matches:
             return model.BlockedStatus(
-                "application with name '%s' already exists on GitLab (possibly from a previous "
-                "Charmed Legend deployment). Please either delete the existing app, change the "
-                "'application-name' config option for a new one to be created, or use the "
-                "'bypass-client-id/secret' config options to set the client ID/secret "
-                "of the existing application which you can obtain by accessing the "
-                "GitLab installation's Web UI." % app_name
+                "application with name '%s' already exists on GitLab, please review the charm "
+                "documentation on dealing with this" % (app_name)
             )
 
         redirect_uris = self._get_legend_services_redirect_uris()
