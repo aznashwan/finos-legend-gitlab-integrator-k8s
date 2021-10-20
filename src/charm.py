@@ -4,7 +4,9 @@
 
 """ Module defining a Charm providing GitLab integration for FINOS Legend. """
 
+import base64
 import logging
+import ssl
 import traceback
 
 import gitlab
@@ -123,14 +125,13 @@ class LegendGitlabIntegratorCharm(charm.CharmBase):
 
     @property
     def _gitlab_client(self):
-        if not self.model.config.get("access-token") or not (
-            self.model.config.get("gitlab-host-der-b64")
-        ):
+        if not self.model.config.get("access-token"):
             return None
         return gitlab.Gitlab(
             self._get_gitlab_base_url(),
             private_token=self.model.config["access-token"],
-            ssl_verify=self.model.config["verify-ssl"],
+            # NOTE(aznashwan): we skip SSL verification for GitLabs with self-signed certs:
+            ssl_verify=False,
         )
 
     def _get_gitlab_openid_discovery_url(self):
@@ -270,19 +271,48 @@ class LegendGitlabIntegratorCharm(charm.CharmBase):
             )
         return None
 
+    def _get_gitlab_host_cert_b64(self):
+        host = self.model.config["gitlab-host"]
+        port = self.model.config["gitlab-port"]
+        if any([not param for param in [host, port]]):
+            return model.BlockedStatus(
+                "both a 'gitlab-host' and 'gitlab-port' config options are required"
+            )
+
+        cert = None
+        try:
+            cert = ssl.get_server_certificate((host, port))
+        except Exception:
+            return model.BlockedStatus(
+                "failed to retrieve SSL cert for GitLab host '%s:%d'. SSL is required "
+                "for the GitLab to be usable by the Legend components" % (host, port)
+            )
+
+        # NOTE(aznashwan): we can also send the .PEM but there's no point in base64-ing it twice:
+        return base64.b64encode(ssl.PEM_cert_to_DER_cert(cert)).decode()
+
     def _get_gitlab_relation_data(self):
         if not all([self._stored.gitlab_client_id, self._stored.gitlab_client_secret]):
-            logger.warning("GitLab Client ID and Secret unset.")
-            return {}
-        return {
+            return model.BlockedStatus("awaiting gitlab server configuration or relation")
+
+        scheme = self._get_gitlab_scheme()
+        rel_data = {
             "gitlab_host": self.model.config["gitlab-host"],
             "gitlab_port": self.model.config["gitlab-port"],
-            "gitlab_host_cert_b64": self.model.config["gitlab-host-der-b64"],
-            "gitlab_scheme": self._get_gitlab_scheme(),
+            "gitlab_scheme": scheme,
             "client_id": self._stored.gitlab_client_id,
             "client_secret": self._stored.gitlab_client_secret,
             "openid_discovery_url": self._get_gitlab_openid_discovery_url(),
         }
+
+        cert_b64 = ""
+        if scheme == GITLAB_SCHEME_HTTPS:
+            cert_b64 = self._get_gitlab_host_cert_b64()
+            if isinstance(cert_b64, model.BlockedStatus):
+                return cert_b64
+        rel_data["gitlab_host_cert_b64"] = cert_b64
+
+        return rel_data
 
     def _set_legend_gitlab_data_in_relation(
         self, relation_name, gitlab_relation_data, validate_creds=True
@@ -339,11 +369,10 @@ class LegendGitlabIntegratorCharm(charm.CharmBase):
             return
 
         gitlab_relation_data = self._get_gitlab_relation_data()
-        if not gitlab_relation_data:
-            self.unit.status = model.BlockedStatus(
-                "awaiting gitlab server configuration or relation"
-            )
+        if isinstance(gitlab_relation_data, model.BlockedStatus):
+            self.unit.status = gitlab_relation_data
             return
+
         # propagate the relation data:
         possible_blocked_status = self._set_gitlab_data_in_all_relations(
             gitlab_relation_data, validate_creds=False

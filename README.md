@@ -41,15 +41,10 @@ $ juju relate finos-legend-gitlab-integrator-k8s finos-legend-studio-k8s
 Prerequisites:
 * a private GitLab deployment configured to use HTTPS
 * a [personal access token](https://docs.gitlab.com/ee/user/profile/personal_access_tokens.html) for the GitLab
-* the certificate (`*.der`) for the GitLab deployment
 
 ```bash
-# Convert the '*.der' into base64
-CERT=`base64 -w 0 /path/to/certfile.der`
-
 juju config finos-legend-gitlab-integrator-k8s \
-    gitlab-host=10.107.2.9 gitlab-host-der-b64="$CERT" gitlab-port=443 \
-    access-token="CqVrcbHOMeU="
+    gitlab-host=10.107.2.9 gitlab-port=443 access-token="CqVrcbHOMeU="
 ```
 
 ### B: Using pre-created GitLab application

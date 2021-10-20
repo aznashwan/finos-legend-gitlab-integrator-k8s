@@ -1,6 +1,7 @@
 # Copyright 2021 Canonical
 # See LICENSE file for licensing details.
 
+import base64
 import itertools
 import json
 import unittest
@@ -31,7 +32,6 @@ class TestCharm(unittest.TestCase):
         """Adds a relation with the given name and data."""
         relator_name = "%s-relator" % relation_name
         rel_id = self.harness.add_relation(relation_name, relator_name)
-        relator_unit = "%s/0" % relator_name
         self.harness.add_relation_unit(rel_id, relator_name)
         self.harness.update_relation_data(rel_id, relator_name, relation_data)
         return rel_id
@@ -54,11 +54,10 @@ class TestCharm(unittest.TestCase):
             self.harness.update_config()
         return rels
 
-    def _get_gitlab_creds_from_config(self, config, client_id=None, client_secret=None):
-        return {
+    def _get_gitlab_creds_from_config(self, config, client_id=None, client_secret=None, cert=None):
+        creds = {
             "gitlab_host": config["gitlab-host"],
             "gitlab_port": config["gitlab-port"],
-            "gitlab_host_cert_b64": config["gitlab-host-der-b64"],
             "gitlab_scheme": config["api-scheme"],
             "client_id": config.get("bypass-client-id", client_id),
             "client_secret": config.get("bypass-client-secret", client_secret),
@@ -74,11 +73,18 @@ class TestCharm(unittest.TestCase):
                 }
             ),
         }
+        if cert:
+            creds["gitlab_host_cert_b64"] = base64.b64encode(cert).decode()
+        return creds
 
+    @mock.patch("charm.ssl")
     @mock.patch(
         "charms.finos_legend_gitlab_integrator_k8s.v0.legend_gitlab.set_legend_gitlab_creds_in_relation_data"
     )
-    def test_charm_setup_gitlab_bypass(self, _set_legend_creds_mock):
+    def test_charm_setup_gitlab_bypass(self, _set_legend_creds_mock, _mock_ssl):
+        _mock_ssl.get_server_certificate.return_value = b"test_cert_pem"
+        _mock_ssl.PEM_cert_to_DER_cert.return_value = b"test_cert_der"
+
         self.harness.begin_with_initial_hooks()
 
         # Add all the service relations:
@@ -98,7 +104,6 @@ class TestCharm(unittest.TestCase):
             "gitlab-port": 1234,
             "bypass-client-id": "test_client_id",
             "bypass-client-secret": "test_client_secret",
-            "gitlab-host-der-b64": "test_cert_b64",
         }
         self.harness.update_config(config_values)
         self.assertIsInstance(self.harness.charm.unit.status, model.ActiveStatus)
@@ -110,17 +115,22 @@ class TestCharm(unittest.TestCase):
         )
 
         # Check relations data:
-        creds = self._get_gitlab_creds_from_config(config_values)
+        creds = self._get_gitlab_creds_from_config(
+            config_values, cert=_mock_ssl.PEM_cert_to_DER_cert.return_value
+        )
         relations_set_calls = []
         for relation_name, relation_id in legend_relations_id_map.items():
             relations_set_calls.append(mock.call({}, creds, validate_creds=False))
         _set_legend_creds_mock.assert_has_calls(relations_set_calls)
 
+    @mock.patch("charm.ssl")
     @mock.patch("gitlab.Gitlab")
     @mock.patch(
         "charms.finos_legend_gitlab_integrator_k8s.v0.legend_gitlab.set_legend_gitlab_creds_in_relation_data"
     )
-    def test_charm_setup_gitlab_application(self, _set_legend_creds_mock, _mock_gitlab_cls):
+    def test_charm_setup_gitlab_application(
+        self, _set_legend_creds_mock, _mock_gitlab_cls, _mock_ssl
+    ):
         _mock_gitlab = mock.MagicMock()
         _mock_gitlab.applications.list.return_value = []
         _mock_app = mock.MagicMock()
@@ -128,6 +138,10 @@ class TestCharm(unittest.TestCase):
         _mock_app.application_id = "test_app_id"
         _mock_app.secret = "test_app_secret"
         _mock_gitlab.applications.create.return_value = _mock_app
+        test_cert_pem = b"test_cert_pem"
+        _mock_ssl.get_server_certificate.return_value = test_cert_pem
+        test_cert_der = b"test_cert_der"
+        _mock_ssl.PEM_cert_to_DER_cert.return_value = test_cert_der
 
         _mock_gitlab_cls.return_value = _mock_gitlab
         self.harness.begin_with_initial_hooks()
@@ -141,6 +155,10 @@ class TestCharm(unittest.TestCase):
             self.harness.charm.unit.status.message,
             "awaiting gitlab server configuration or relation",
         )
+        _mock_gitlab.applications.list.assert_not_called()
+        _mock_gitlab.applications.create.assert_not_called()
+        _mock_ssl.get_server_certificate.assert_not_called()
+        _mock_ssl.PEM_cert_to_DER_cert.assert_not_called()
 
         # Configure for private gitlab:
         config = {
@@ -148,9 +166,7 @@ class TestCharm(unittest.TestCase):
             "gitlab-host": "gitlab_host",
             "api-scheme": "https",
             "gitlab-port": 1234,
-            "verify-ssl": False,
             "access-token": "gitlab-token",
-            "gitlab-host-der-b64": "test_cert_b64",
         }
 
         # Test auth failure:
@@ -162,6 +178,9 @@ class TestCharm(unittest.TestCase):
             self.harness.charm.unit.status.message,
             "failed to authorize against gitlab, are the credentials correct?",
         )
+        _mock_gitlab.applications.create.assert_not_called()
+        _mock_ssl.get_server_certificate.assert_not_called()
+        _mock_ssl.PEM_cert_to_DER_cert.assert_not_called()
 
         # Test GitLab applications APIs not being available (HTTP 403):
         _mock_gitlab.applications.list.reset_mock()
@@ -177,6 +196,9 @@ class TestCharm(unittest.TestCase):
             ", ensure the configured gitlab host can create "
             "application or manuallly create one",
         )
+        _mock_gitlab.applications.create.assert_not_called()
+        _mock_ssl.get_server_certificate.assert_not_called()
+        _mock_ssl.PEM_cert_to_DER_cert.assert_not_called()
 
         # Test any other gitlab applications API error:
         # List failing:
@@ -212,12 +234,40 @@ class TestCharm(unittest.TestCase):
             self.harness.charm.unit.status.message, "failed to create application on gitlab"
         )
 
+        # `ssl.get_server_certificate` on GitLab failing:
+        _mock_gitlab.applications.list.reset_mock()
+        _mock_gitlab.applications.list.side_effect = None
+        _mock_gitlab.applications.list.return_value = []
+        _mock_gitlab.applications.create.return_value = _mock_app
+        _mock_gitlab.applications.create.side_effect = None
+        _mock_ssl.get_server_certificate.side_effect = Exception
+        self.harness.update_config(config)
+        self.assertIsInstance(self.harness.charm.unit.status, model.BlockedStatus)
+        _mock_gitlab.applications.list.assert_called_once()
+        _mock_ssl.get_server_certificate.assert_called_once_with(
+            (config["gitlab-host"], config["gitlab-port"])
+        )
+        self.assertEqual(
+            self.harness.charm.unit.status.message,
+            "failed to retrieve SSL cert for GitLab host '%s:%d'. SSL is required "
+            "for the GitLab to be usable by the Legend components"
+            % (config["gitlab-host"], config["gitlab-port"]),
+        )
+
         # Actually let it run:
         _mock_gitlab.applications.list.reset_mock()
         _mock_gitlab.applications.list.side_effect = None
         _mock_gitlab.applications.create.reset_mock()
         _mock_gitlab.applications.create.side_effect = None
+        _mock_ssl.get_server_certificate.reset_mock()
+        _mock_ssl.get_server_certificate.side_effect = None
+        _mock_ssl.get_server_certificate.return_value = test_cert_pem
+        _mock_ssl.PEM_cert_to_DER_cert.reset_mock()
+        _mock_ssl.PEM_cert_to_DER_cert.side_effect = None
+        _mock_ssl.PEM_cert_to_DER_cert.return_value = test_cert_der
+
         self.harness.update_config(config)
+        self.assertIsInstance(self.harness.charm.unit.status, model.ActiveStatus)
         self.assertEqual(self.harness.charm._stored.gitlab_client_id, _mock_app.application_id)
         self.assertEqual(self.harness.charm._stored.gitlab_client_secret, _mock_app.secret)
         _mock_gitlab.applications.list.assert_called_once()
@@ -238,10 +288,17 @@ class TestCharm(unittest.TestCase):
                 ),
             }
         )
+        _mock_ssl.get_server_certificate.assert_called_once_with(
+            (config["gitlab-host"], config["gitlab-port"])
+        )
+        _mock_ssl.PEM_cert_to_DER_cert.assert_called_once_with(test_cert_pem)
 
         # Check relations data:
         creds = self._get_gitlab_creds_from_config(
-            config, client_id=_mock_app.application_id, client_secret=_mock_app.secret
+            config,
+            client_id=_mock_app.application_id,
+            client_secret=_mock_app.secret,
+            cert=_mock_ssl.PEM_cert_to_DER_cert.return_value,
         )
         relations_set_calls = []
         for relation_name, relation_id in legend_relations_id_map.items():

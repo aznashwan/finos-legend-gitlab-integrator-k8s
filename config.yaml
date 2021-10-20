@@ -12,15 +12,6 @@ options:
     default: 443
     description: Port on the provided 'gitlab-host' to contact the API on.
 
-  gitlab-host-der-b64:
-    type: string
-    default: ""
-    description: |
-      Base64-encoded string containing the .DER certificate file for the GitLab
-      deployment. The file must declare the correct IP/Hostname of the GitLab instance
-      as set using 'gitlab-host'.
-      With the .der file in-hand, simply `base64 -w 0 /path/to/file.der`.
-
   api-scheme:
     type: string
     default: https
@@ -37,13 +28,6 @@ options:
     type: string
     description: |
       String access token for the GitLab API on the provided host.
-
-  verify-ssl:
-    type: boolean
-    default: true
-    description: |
-      Whether or not to trust certificates if configured to connect to a
-      server which is using HTTPS with a self-signed certificate.
 
   bypass-client-id:
     type: string
