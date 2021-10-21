@@ -305,10 +305,7 @@ class TestCharm(unittest.TestCase):
             relations_set_calls.append(mock.call({}, creds, validate_creds=False))
         _set_legend_creds_mock.assert_has_calls(relations_set_calls)
 
-    @mock.patch(
-        "charms.finos_legend_gitlab_integrator_k8s.v0.legend_gitlab.set_legend_gitlab_creds_in_relation_data"
-    )
-    def test_get_redirect_uris_action(self, _set_legend_creds_mock):
+    def test_get_redirect_uris_action(self):
         self.harness.begin_with_initial_hooks()
 
         # NOTE: ordering is important:
@@ -322,8 +319,8 @@ class TestCharm(unittest.TestCase):
         }
         for relation in relations:
             # Action should be unusable without all relations:
-            with self.assertRaises(ValueError):
-                self.harness.charm._on_get_redirect_uris_actions(mock.MagicMock())
+            with self.assertRaises(Exception):
+                self.harness.charm._on_get_redirect_uris_action(mock.MagicMock())
             self._add_relation(
                 relation,
                 {"legend-gitlab-redirect-uris": json.dumps(relation_redirect_urls_map[relation])},
@@ -335,5 +332,53 @@ class TestCharm(unittest.TestCase):
             list(itertools.chain(*[relation_redirect_urls_map[rel] for rel in relations]))
         )
         event = mock.Mock()
-        self.harness.charm._on_get_redirect_uris_actions(event)
+        self.harness.charm._on_get_redirect_uris_action(event)
         event.set_results.assert_called_once_with({"result": expected})
+
+    @mock.patch("charm.ssl")
+    @mock.patch(
+        "charms.finos_legend_gitlab_integrator_k8s.v0.legend_gitlab.set_legend_gitlab_creds_in_relation_data"
+    )
+    def test_get_legend_gitlab_params_action(self, _mock_set_creds, _mock_ssl):
+        _mock_ssl.get_server_certificate.return_value = b"test_cert_pem"
+        _mock_ssl.PEM_cert_to_DER_cert.return_value = b"test_cert_der"
+
+        # Add all the service relations:
+        self.harness.begin_with_initial_hooks()
+        _ = self._add_legend_relations()
+
+        # No client ID/secret present:
+        event = mock.MagicMock()
+        with self.assertRaises(Exception):
+            self.harness.charm._on_get_legend_gitlab_params_action(event)
+        event.set_results.assert_not_called()
+        _mock_ssl.get_server_certificate.assert_not_called()
+        _mock_ssl.PEM_cert_to_DER_cert.assert_not_called()
+
+        # Proper test:
+        config_values = {
+            "gitlab-host": "gitlab_host",
+            "api-scheme": "https",
+            "gitlab-port": 1234,
+            "bypass-client-id": "test_client_id",
+            "bypass-client-secret": "test_client_secret",
+        }
+        self.harness.update_config(config_values)
+        self.assertIsInstance(self.harness.charm.unit.status, model.ActiveStatus)
+        self.assertEqual(
+            self.harness.charm._stored.gitlab_client_id, config_values["bypass-client-id"]
+        )
+        self.assertEqual(
+            self.harness.charm._stored.gitlab_client_secret, config_values["bypass-client-secret"]
+        )
+
+        expected_creds = self._get_gitlab_creds_from_config(
+            config_values, cert=_mock_ssl.PEM_cert_to_DER_cert.return_value
+        )
+        self.harness.charm._on_get_legend_gitlab_params_action(event)
+        event.set_results.assert_called_once_with({"result": expected_creds})
+        _mock_ssl.get_server_certificate.assert_has_calls(
+            [mock.call((config_values["gitlab-host"], config_values["gitlab-port"]))] * 2
+        )
+        _mock_ssl.PEM_cert_to_DER_cert.assert_has_calls(
+            [mock.call(_mock_ssl.get_server_certificate.return_value)])

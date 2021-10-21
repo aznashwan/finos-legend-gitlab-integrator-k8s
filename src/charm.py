@@ -99,7 +99,10 @@ class LegendGitlabIntegratorCharm(charm.CharmBase):
 
         # Actions:
         self.framework.observe(
-            self.on.get_redirect_uris_action, self._on_get_redirect_uris_actions
+            self.on.get_redirect_uris_action, self._on_get_redirect_uris_action
+        )
+        self.framework.observe(
+            self.on.get_legend_gitlab_params_action, self._on_get_legend_gitlab_params_action
         )
 
     def _set_stored_defaults(self) -> None:
@@ -424,13 +427,20 @@ class LegendGitlabIntegratorCharm(charm.CharmBase):
     def _on_legend_studio_gitlab_relation_broken(self, event: charm.RelationBrokenEvent) -> None:
         self._update_charm_status()
 
-    def _on_get_redirect_uris_actions(self, event: charm.ActionEvent):
+    def _on_get_redirect_uris_action(self, event: charm.ActionEvent) -> None:
         redirect_uris = self._get_legend_services_redirect_uris()
         if not redirect_uris:
-            raise ValueError(
+            raise Exception(
                 "Need to have all Legend services related to return redirect " "URIs."
             )
         event.set_results({"result": redirect_uris})
+
+    def _on_get_legend_gitlab_params_action(self, event: charm.ActionEvent) -> None:
+        params = self._get_gitlab_relation_data()
+        if isinstance(params, (model.BlockedStatus, model.WaitingStatus)):
+            raise Exception(
+                "No GitLab configuration currently present.")
+        event.set_results({"result": params})
 
 
 if __name__ == "__main__":

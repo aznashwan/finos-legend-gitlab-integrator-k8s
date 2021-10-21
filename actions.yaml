@@ -7,3 +7,11 @@ get-redirect-uris:
     the GitLab application separated by newlines.
     This requires the Integrator be already related to all of the FINOS Legend
     components which require their redirect URIs set.
+
+get-legend-gitlab-params:
+  description: |
+    Returns a string containing all the GitLab information (including OAuth
+    application and client IDs) which the Integrator will pass on to the
+    Legend components.
+    This requires that the integrator have been previously configured/related
+    to a GitLab installation.
