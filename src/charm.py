@@ -453,6 +453,7 @@ class LegendGitlabIntegratorCharm(charm.CharmBase):
         if isinstance(params, (model.BlockedStatus, model.WaitingStatus)):
             raise Exception("No GitLab configuration currently present.")
         event.set_results({"result": {k.replace("_", "-"): v for k, v in params.items()}})
+        logger.debug("test")
 
 
 if __name__ == "__main__":
