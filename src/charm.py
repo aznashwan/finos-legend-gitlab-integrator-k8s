@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-# Copyright 2021 Canonical
+# Copyright 2021 Canonical Ltd.
 # See LICENSE file for licensing details.
 
-""" Module defining a Charm providing GitLab integration for FINOS Legend. """
+"""Module defining a Charm providing GitLab integration for FINOS Legend."""
 
 import base64
+import functools
 import logging
 import ssl
 import traceback
@@ -33,6 +34,36 @@ RELATION_NAME_SDLC = "legend-sdlc-gitlab"
 RELATION_NAME_ENGINE = "legend-engine-gitlab"
 RELATION_NAME_STUDIO = "legend-studio-gitlab"
 ALL_LEGEND_RELATION_NAMES = [RELATION_NAME_SDLC, RELATION_NAME_ENGINE, RELATION_NAME_STUDIO]
+
+
+def _safe_gitlab_call(op):
+    """Decorator which catches GitLab API errors and returns a `model.BlockedStatus` instead."""
+
+    @functools.wraps(op)
+    def _inner(*args, **kwargs):
+        try:
+            return op(*args, **kwargs)
+        except gitlab.exceptions.GitlabAuthenticationError as err:
+            logger.exception("Exception occurred while attempting to list GitLab apps: %s", err)
+            return model.BlockedStatus(
+                "failed to authorize against gitlab, are the credentials correct?"
+            )
+        except gitlab.exceptions.GitlabError as err:
+            logger.exception("Exception occurred while attempting to list GitLab apps: %s", err)
+            if getattr(err, "response_code", 0) == 403:
+                return model.BlockedStatus(
+                    "gitlab refused access to the applications apis with a 403"
+                    ", ensure the configured gitlab host can create "
+                    "application or manuallly create one"
+                )
+            return model.BlockedStatus(
+                "exception occurred while attempting to list existing GitLab apps"
+            )
+        except Exception:
+            logger.error("Exception occured while listing GitLab apps: %s", traceback.format_exc())
+            return model.BlockedStatus("failed to access gitlab api")
+
+    return _inner
 
 
 class LegendGitlabIntegratorCharm(charm.CharmBase):
@@ -139,9 +170,12 @@ class LegendGitlabIntegratorCharm(charm.CharmBase):
         return GITLAB_OPENID_DISCOVERY_URL_FORMAT % {"base_url": self._get_gitlab_base_url()}
 
     def _check_set_up_gitlab_application(self):
-        """Checks whether either GitLab App bypass ID/secret was provided, or
-        attempts to create a new application on GitLab otherwise.
-        Either way, the client ID/secret of the app is set within stored state.
+        """Sets up the GitLab application for the Legend deployment.
+
+        If a GitLab App bypass ID/secret was provided, this method will simply use those.
+        Else, it will attempt to create a new application on GitLab.
+        Either way, the client ID/secret of the app is set within stored state as it is only
+        made available by the API on app creation.
         """
         bypass_client_id = self.model.config["bypass-client-id"]
         bypass_client_secret = self.model.config["bypass-client-secret"]
@@ -157,28 +191,9 @@ class LegendGitlabIntegratorCharm(charm.CharmBase):
             return model.BlockedStatus("awaiting gitlab server configuration or relation")
 
         # NOTE(aznashwan): GitLab.com has disabled the application APIs:
-        existing_apps = []
-        try:
-            existing_apps = gitlab_client.applications.list()
-        except gitlab.exceptions.GitlabAuthenticationError as err:
-            logger.exception("Exception occurred while attempting to list GitLab apps: %s", err)
-            return model.BlockedStatus(
-                "failed to authorize against gitlab, are the credentials " "correct?"
-            )
-        except gitlab.exceptions.GitlabError as err:
-            logger.exception("Exception occurred while attempting to list GitLab apps: %s", err)
-            if getattr(err, "response_code", 0) == 403:
-                return model.BlockedStatus(
-                    "gitlab refused access to the applications apis with a 403"
-                    ", ensure the configured gitlab host can create "
-                    "application or manuallly create one"
-                )
-            return model.BlockedStatus(
-                "exception occurred while attempting to list existing GitLab " "apps"
-            )
-        except Exception:
-            logger.error("Exception occured while listing GitLab apps: %s", traceback.format_exc())
-            return model.BlockedStatus("failed to access gitlab api")
+        existing_apps = _safe_gitlab_call(gitlab_client.applications.list)()
+        if isinstance(existing_apps, model.BlockedStatus):
+            return existing_apps
 
         # Check app name is available:
         app_name = self.model.config["application-name"]
@@ -204,7 +219,7 @@ class LegendGitlabIntegratorCharm(charm.CharmBase):
             "redirect_uri": redirect_uris,
         }
         logger.info(
-            "Attempting to create new GitLab application with the following " "properties: %s",
+            "Attempting to create new GitLab application with the following properties: %s",
             app_properties,
         )
         try:
@@ -213,6 +228,8 @@ class LegendGitlabIntegratorCharm(charm.CharmBase):
             logger.exception(ex)
             return model.BlockedStatus("failed to create application on gitlab")
 
+        # NOTE(aznashwan): the client ID and secret are only available from the API
+        # call which created the application, so we store them inside the charm:
         self._stored.gitlab_client_id = app.application_id
         self._stored.gitlab_client_secret = app.secret
 
@@ -229,8 +246,8 @@ class LegendGitlabIntegratorCharm(charm.CharmBase):
             return None
 
     def _get_legend_services_redirect_uris(self):
-        """Returns a string containing the service URLs in the correct order
-        (Engine, SDLC, then Studio).
+        """Returns a string containing the service URLs in the correct order.
+
         Returns an empty string if not all Legend services are related.
         """
         relation_names = [
@@ -254,9 +271,10 @@ class LegendGitlabIntegratorCharm(charm.CharmBase):
         return redirect_uris
 
     def _check_legend_services_relations_status(self):
-        """Checks whether all the required Legend services were related.
-        Returns None if all the relations are present, or a
-        `model.BlockedStatus` with a relevant message otherwise.
+        """Checks whether all the required Legend services are currently related.
+
+        Returns None if all the relations are present, or a `model.BlockedStatus`
+        with a relevant message otherwise.
         """
         relation_names = [RELATION_NAME_SDLC, RELATION_NAME_ENGINE, RELATION_NAME_STUDIO]
         # NOTE(aznashwan): it is acceptable for a service to have no redirect
@@ -319,6 +337,7 @@ class LegendGitlabIntegratorCharm(charm.CharmBase):
         self, relation_name, gitlab_relation_data, validate_creds=True
     ):
         """Sets the provided GitLab data into the given relation.
+
         Returns a `model.BlockedStatus` is something goes wrong, else None.
         """
         relation = None
@@ -337,17 +356,15 @@ class LegendGitlabIntegratorCharm(charm.CharmBase):
                 relation.data[self.app], gitlab_relation_data, validate_creds=validate_creds
             )
         except ValueError as ex:
-            logger.warning(
-                "Error occurred while setting GitLab creds relation " "data: %s", str(ex)
-            )
+            logger.warning("Error occurred while setting GitLab creds relation data: %s", str(ex))
             return model.BlockedStatus(
                 "failed to set gitlab credentials in %s relation" % (relation_name)
             )
         return None
 
     def _set_gitlab_data_in_all_relations(self, gitlab_relation_data, validate_creds=True):
-        """Sets the provided GitLab data into all the relations with the
-        Legend services.
+        """Sets the provided GitLab data into all the relations with the Legend services.
+
         Returns a `model.BlockedStatus` is something goes wrong, else None.
         """
         for relation_name in ALL_LEGEND_RELATION_NAMES:
@@ -428,7 +445,7 @@ class LegendGitlabIntegratorCharm(charm.CharmBase):
     def _on_get_redirect_uris_action(self, event: charm.ActionEvent) -> None:
         redirect_uris = self._get_legend_services_redirect_uris()
         if not redirect_uris:
-            raise Exception("Need to have all Legend services related to return redirect " "URIs.")
+            raise Exception("Need to have all Legend services related to return redirect URIs.")
         event.set_results({"result": redirect_uris})
 
     def _on_get_legend_gitlab_params_action(self, event: charm.ActionEvent) -> None:
